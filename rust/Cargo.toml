@@ -18,6 +18,12 @@ tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls-no-provider", "stream", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "1"
+# Merge the OS trust store with the built-in roots so TLS-inspecting
+# enterprise/school WiFi proxies (self-signed CA) verify instead of failing
+# the handshake. `rustls-native-certs` reads the platform store without
+# pulling in the Android platform-verifier path that reqwest's default
+# feature would add.
+rustls-native-certs = "0.8"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 cipher = { version = "0.4", features = ["alloc", "block-padding"] }

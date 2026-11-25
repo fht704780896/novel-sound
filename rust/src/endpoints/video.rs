@@ -3007,14 +3007,22 @@ async fn unsigned_get(ctx: &Ctx, url: &str, user_agent: &str, max_bytes: usize) 
 /// or an endless body from filling the disk or memory.
 const MAX_VIDEO_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Total timeout for one video download, matching the 15 s the shared
-/// upstream transport applies to the old whole-body download.
-const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bounding timeouts for one streaming video download. A whole-request
+/// deadline (the old 15 s cap) truncates any file that a slow or congested
+/// WiFi cannot fetch in one shot; instead bound only the phases that must
+/// make progress: TCP+TLS connect, receiving response headers, and the
+/// idle gap between body chunks. Total transfer time is unbounded, which
+/// is correct for a multi-minute download on a weak network.
+const VIDEO_DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const VIDEO_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A plain reqwest client for streaming video downloads. The shared upstream
 /// transport (`upstream/http.rs`) only exposes a whole-body API, so the
 /// download path keeps its own client; it sends the same unsigned GET with
 /// the same User-Agent as `unsigned_get` (no signing, no device headers).
+/// Only connect/header timeouts are set here: a whole-request cap would
+/// truncate slow-WiFi downloads, and stalls in the body are caught by the
+/// per-chunk idle timeout in the stream loop instead.
 /// Rotates with the core's outbound policy so downloads never reuse an old proxy pool.
 fn streaming_client() -> Option<reqwest::Client> {
     static CLIENT: crate::network::ClientCache<reqwest::Client> =
@@ -3024,7 +3032,8 @@ fn streaming_client() -> Option<reqwest::Client> {
             let _ = rustls::crypto::ring::default_provider().install_default();
             policy
                 .configure(reqwest::Client::builder())
-                .timeout(VIDEO_DOWNLOAD_TIMEOUT)
+                .connect_timeout(VIDEO_DOWNLOAD_CONNECT_TIMEOUT)
+                .timeout(VIDEO_DOWNLOAD_IDLE_TIMEOUT)
                 .build()
                 .map_err(|e| format!("build streaming client: {e}"))
         })
@@ -3052,7 +3061,9 @@ pub(crate) async fn stream_download_to_file_with_cap(
     let client = streaming_client().ok_or_else(|| "streaming client unavailable".to_string())?;
     let mut resp = client
         .get(url)
-        .timeout(crate::upstream::budget::cap_timeout(VIDEO_DOWNLOAD_TIMEOUT))
+        .timeout(crate::upstream::budget::cap_timeout(
+            VIDEO_DOWNLOAD_IDLE_TIMEOUT,
+        ))
         .header(reqwest::header::USER_AGENT, user_agent)
         .send()
         .await

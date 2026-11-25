@@ -1,5 +1,7 @@
 //! Explicit desktop proxies override default routing without a direct fallback.
-//! Linux defaults retain OS/environment routing; Windows defaults force direct.
+//! Both Windows and Linux defaults retain OS/environment routing so that
+//! networks which require a system/proxy environment still work; only an
+//! explicitly configured proxy disables the inherited environment routing.
 //! Desktop client caches rotate with each core initialization.
 use std::sync::{Mutex, RwLock};
 
@@ -82,13 +84,12 @@ impl Policy {
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub(crate) fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        // An explicit proxy replaces the environment routing without a direct
+        // fallback; otherwise reqwest keeps the OS/environment proxy so
+        // WiFi networks that require one still reach the upstream.
         match &self.proxy {
             Some(proxy) => builder.no_proxy().proxy(proxy.clone()),
-            None => {
-                #[cfg(target_os = "windows")]
-                let builder = builder.no_proxy();
-                builder
-            }
+            None => builder,
         }
     }
     #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -98,11 +99,7 @@ impl Policy {
     ) -> reqwest::blocking::ClientBuilder {
         match &self.proxy {
             Some(proxy) => builder.no_proxy().proxy(proxy.clone()),
-            None => {
-                #[cfg(target_os = "windows")]
-                let builder = builder.no_proxy();
-                builder
-            }
+            None => builder,
         }
     }
 

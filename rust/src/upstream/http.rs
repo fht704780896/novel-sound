@@ -640,6 +640,14 @@ fn ensure_crypto_provider() {
 fn build_tls_config() -> Result<rustls::ClientConfig, String> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    // Also trust the OS store so corporate/school WiFi TLS-inspecting proxies
+    // (a self-signed CA the user installed) verify instead of failing the
+    // handshake on every API and media request. webpki roots stay as the base
+    // floor; OS certs are additive, and `accept_invalid` skips any the rustls
+    // parser rejects rather than aborting the build.
+    for cert in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(cert);
+    }
     let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()

@@ -377,12 +377,12 @@ fn unified_network_policy() {
     std::env::set_var("HTTPS_PROXY", &first_proxy.url);
     std::env::set_var("ALL_PROXY", &first_proxy.url);
     std::env::remove_var("NO_PROXY");
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         assert_eq!(
             fetch(&origin.url),
             b"proxy-one",
-            "disabled Linux policy retains environment routing"
+            "disabled desktop policy retains environment routing"
         );
         assert_media(&root, &origin.url, b"proxy-one");
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {

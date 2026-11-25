@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -70,6 +71,17 @@ class ListenKeepAliveService : Service() {
     private var durationMs: Long = 0L
     private var speed: Float = 1f
 
+    /**
+     * 播放期间的 PARTIAL_WAKE_LOCK。
+     *
+     * ExoPlayer 自带的 wake lock 只在「正在出音频」时持有，章节自动切换的取源/建播放器
+     * 空档（[audio_playback_controller] 后台 `_openChapter` → 网络 `_fetchSource`）里 CPU
+     * 一旦随息屏进入休眠，Dart 定时器与取源协程会被 Doze 冻结，30s 取源超时后抛错 →
+     * 用户看到「播放出错，请稍后重试」。这里用服务级 wake lock 覆盖整个播放会话（含切章
+     * 空档），暂停/停止即释放，避免长期耗电。WAKE_LOCK 权限见 AndroidManifest。
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -82,12 +94,36 @@ class ListenKeepAliveService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
+    /** 播放中持有、暂停/停止释放（见 [wakeLock] 注释）。 */
+    private fun syncWakeLock(playing: Boolean) {
+        if (playing) {
+            if (wakeLock?.isHeld == true) return
+            val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val lock = manager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                WAKE_LOCK_TAG
+            )
+            lock.setReferenceCounted(false)
+            try {
+                lock.acquire()
+                wakeLock = lock
+            } catch (error: Throwable) {
+                Log.w(TAG, "listen wake lock failed", error)
+                runCatching { lock.release() }
+            }
+        } else {
+            wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
+            wakeLock = null
+        }
+    }
+
     override fun onDestroy() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
             stopForeground(true)
         }
+        syncWakeLock(false)
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .cancel(NOTIFICATION_ID)
         mediaSession?.release()
@@ -163,6 +199,7 @@ class ListenKeepAliveService : Service() {
         positionMs = position
         durationMs = duration
         speed = rate
+        syncWakeLock(playing)
 
         val notification = buildNotification(title, episode, isPlaying, hasPrev, hasNext)
         syncPlaybackState(isPlaying, positionMs, durationMs, speed)
@@ -453,6 +490,8 @@ class ListenKeepAliveService : Service() {
         private const val REQUEST_STOP = 104
 
         private const val MEDIA_SESSION_TAG = "fqapp-listen"
+
+        private const val WAKE_LOCK_TAG = "fqapp::listen-playback"
 
         private const val TAG = "fqapp-listen"
 
