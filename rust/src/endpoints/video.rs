@@ -3015,6 +3015,10 @@ const MAX_VIDEO_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// is correct for a multi-minute download on a weak network.
 const VIDEO_DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const VIDEO_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Cap on the header phase alone: `send()` resolves once response headers are
+/// in, before any body byte is read, so bounding it does not truncate a slow
+/// transfer while still catching a door that accepts TCP and never answers.
+const VIDEO_DOWNLOAD_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A plain reqwest client for streaming video downloads. The shared upstream
 /// transport (`upstream/http.rs`) only exposes a whole-body API, so the
@@ -3033,7 +3037,11 @@ fn streaming_client() -> Option<reqwest::Client> {
             policy
                 .configure(reqwest::Client::builder())
                 .connect_timeout(VIDEO_DOWNLOAD_CONNECT_TIMEOUT)
-                .timeout(VIDEO_DOWNLOAD_IDLE_TIMEOUT)
+                // Per-chunk idle bound only: reqwest's `timeout()` covers the
+                // whole request *including the body*, which would truncate a
+                // slow download exactly like the old 15 s cap did. The caller
+                // (bridge deadline / loopback window) owns the total time.
+                .read_timeout(VIDEO_DOWNLOAD_IDLE_TIMEOUT)
                 .build()
                 .map_err(|e| format!("build streaming client: {e}"))
         })
@@ -3059,15 +3067,22 @@ pub(crate) async fn stream_download_to_file_with_cap(
     cap_bytes: u64,
 ) -> Result<u64, String> {
     let client = streaming_client().ok_or_else(|| "streaming client unavailable".to_string())?;
-    let mut resp = client
-        .get(url)
-        .timeout(crate::upstream::budget::cap_timeout(
-            VIDEO_DOWNLOAD_IDLE_TIMEOUT,
-        ))
-        .header(reqwest::header::USER_AGENT, user_agent)
-        .send()
-        .await
-        .map_err(|e| format!("download video: {e}"))?;
+    // Bound only the header phase here, not the whole body: `send()` resolves
+    // once response headers arrive. The body then streams under the client's
+    // per-chunk read_timeout, so a slow-but-progressing WiFi download is never
+    // truncated by a fixed request deadline. `cap_timeout` keeps the caller's
+    // outer dispatch budget authoritative if it is shorter.
+    let header_budget = crate::upstream::budget::cap_timeout(VIDEO_DOWNLOAD_HEADER_TIMEOUT);
+    let mut resp = tokio::time::timeout(
+        header_budget,
+        client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, user_agent)
+            .send(),
+    )
+    .await
+    .map_err(|_| "download video: header timeout".to_string())?
+    .map_err(|e| format!("download video: {e}"))?;
     // The whole-body path rejects anything but 200; keep that contract.
     if resp.status() != reqwest::StatusCode::OK {
         return Err(format!("download video: HTTP {}", resp.status()));

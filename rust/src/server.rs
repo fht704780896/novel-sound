@@ -218,9 +218,13 @@ async fn handler(State(state): State<AppState>, req: axum::extract::Request) -> 
     let token = state.server.lifetime.child_token();
     // Body collection, dispatch, retries and file setup share this deadline.
     // The returned stream observes shutdown, not a whole-file time limit.
+    // A path that downloads a full upstream body before responding gets a
+    // wider window — see [`crate::upstream::budget::loopback_dispatch_timeout`].
     match race_dispatch(
         &token,
-        Some(crate::upstream::budget::HTTP_REQUEST_TIMEOUT),
+        Some(crate::upstream::budget::loopback_dispatch_timeout(
+            req.uri().path(),
+        )),
         handle_request(state, req),
     )
     .await
