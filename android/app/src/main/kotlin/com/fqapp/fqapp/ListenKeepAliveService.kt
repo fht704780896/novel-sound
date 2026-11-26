@@ -79,8 +79,16 @@ class ListenKeepAliveService : Service() {
      * 一旦随息屏进入休眠，Dart 定时器与取源协程会被 Doze 冻结，30s 取源超时后抛错 →
      * 用户看到「播放出错，请稍后重试」。这里用服务级 wake lock 覆盖整个播放会话（含切章
      * 空档），暂停/停止即释放，避免长期耗电。WAKE_LOCK 权限见 AndroidManifest。
+     *
+     * 切章空档 Dart 推来的 `playing` 是 false（`_syncForeground` 的 isPlaying 含
+     * `!_loading`，媒体卡片在取源期间就该显示暂停态），如果立刻释放 wake lock，恰好在
+     * 最需要 CPU 的取源窗口把锁交了出去。所以暂停态走宽限释放：60s 后复查仍未播放才
+     * 真正释放——一次取源最多 30s 超时，宽限窗口足够覆盖；真正的长时间暂停照样省电。
      */
     private var wakeLock: PowerManager.WakeLock? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var releasePending: Runnable? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -94,9 +102,11 @@ class ListenKeepAliveService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
-    /** 播放中持有、暂停/停止释放（见 [wakeLock] 注释）。 */
+    /** 播放中持有、暂停/停止走宽限释放（见 [wakeLock] 注释）。 */
     private fun syncWakeLock(playing: Boolean) {
         if (playing) {
+            releasePending?.let { mainHandler.removeCallbacks(it) }
+            releasePending = null
             if (wakeLock?.isHeld == true) return
             val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
             val lock = manager.newWakeLock(
@@ -112,9 +122,26 @@ class ListenKeepAliveService : Service() {
                 runCatching { lock.release() }
             }
         } else {
+            scheduleWakeLockRelease()
+        }
+    }
+
+    /**
+     * 宽限释放：等 [WAKE_LOCK_RELEASE_GRACE_MS] 后复查，仍在播放（宽限期内切章
+     * 完成会再推 playing=true 并取消本回调）就不释放；否则交还 CPU。
+     * CPU 休眠只可能发生在锁已释放之后，所以这个回调要么准时执行、要么晚执行，
+     * 晚执行的代价只是锁多持有片刻，不影响正确性。
+     */
+    private fun scheduleWakeLockRelease() {
+        releasePending?.let { mainHandler.removeCallbacks(it) }
+        val action = Runnable {
+            releasePending = null
+            if (isPlaying) return@Runnable
             wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
             wakeLock = null
         }
+        releasePending = action
+        mainHandler.postDelayed(action, WAKE_LOCK_RELEASE_GRACE_MS)
     }
 
     override fun onDestroy() {
@@ -123,7 +150,10 @@ class ListenKeepAliveService : Service() {
         } else {
             stopForeground(true)
         }
-        syncWakeLock(false)
+        releasePending?.let { mainHandler.removeCallbacks(it) }
+        releasePending = null
+        wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
+        wakeLock = null
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .cancel(NOTIFICATION_ID)
         mediaSession?.release()
@@ -492,6 +522,12 @@ class ListenKeepAliveService : Service() {
         private const val MEDIA_SESSION_TAG = "fqapp-listen"
 
         private const val WAKE_LOCK_TAG = "fqapp::listen-playback"
+
+        /**
+         * 暂停态的宽限释放窗口。取源协程的失败上限是 Dart 侧 30s 超时，60s 的
+         * 宽限覆盖「一次切章 + 重试」绰绰有余；真暂停 60s 后正常交还 CPU。
+         */
+        private const val WAKE_LOCK_RELEASE_GRACE_MS = 60_000L
 
         private const val TAG = "fqapp-listen"
 
