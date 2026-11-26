@@ -1638,6 +1638,7 @@ class _AudioPlaybackController extends ChangeNotifier
           '${error is ApiException ? ' http=${error.statusCode} upstream=${error.upstreamCode}' : ''}'
           '${error is NativePlaybackException ? ' native=${error.errorCode} http=${error.httpStatusCode}' : ''}'
       '${error is NativePlaybackException && error.pullError != null ? ' pull=[${error.pullError}]' : ''}'
+      '${error is NativePlaybackException && error.route != null ? ' route=[${error.route}]' : ''}'
           '${error is BackendRequestAborted ? ' timed_out=${error.timedOut}' : ''}',
     );
     _discardNextAudio();

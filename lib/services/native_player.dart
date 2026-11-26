@@ -40,11 +40,15 @@ class NativePlaybackException implements Exception {
   /// 由 Kotlin 侧 logMediaFailure 记录、error 事件透传。URL 不会跨桥。
   final String? pullError;
 
+  /// 最近一次连接路由的诊断（direct/proxy + 协议 + 耗时）。
+  final String? route;
+
   const NativePlaybackException(
     this.message, {
     this.errorCode,
     this.httpStatusCode,
     this.pullError,
+    this.route,
   });
 
   factory NativePlaybackException.fromEvent(Object? value) {
@@ -60,6 +64,7 @@ class NativePlaybackException implements Exception {
         pullError: value['pullError'] is String
             ? value['pullError'] as String
             : null,
+        route: value['route'] is String ? value['route'] as String : null,
       );
     }
     // Creation/probe errors and older hosts still send a plain string.
@@ -69,7 +74,8 @@ class NativePlaybackException implements Exception {
   @override
   String toString() => 'NativePlaybackException: $message'
       '${errorCode == null ? '' : ' code=$errorCode'}'
-      '${pullError == null ? '' : ' pull=[$pullError]'}';
+      '${pullError == null ? '' : ' pull=[$pullError]'}'
+      '${route == null ? '' : ' route=[$route]'}';
 }
 
 /// A point-in-time view of native playback metrics.
@@ -1201,6 +1207,13 @@ class NativePlayer {
         _bufferingCtrl.add(_buffering);
       case 'firstFrame':
         _firstFrameRendered = true;
+        // 路由诊断：首帧时实际用的连接路由（direct/proxy + 耗时），旧宿主
+        // 仍发 bool，兼容两种载荷。
+        final value = event['value'];
+        final route = value is Map ? value['route'] : null;
+        if (route is String && route.isNotEmpty) {
+          AppLog.d('native-player', 'pull route: $route');
+        }
         _firstFrameCtrl.add(true);
       case 'videoSize':
         final width = event['width'];

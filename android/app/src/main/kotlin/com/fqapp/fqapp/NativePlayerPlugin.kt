@@ -1105,7 +1105,13 @@ class NativePlayerPlugin internal constructor(
             override fun onRenderedFirstFrame() {
                 if (!firstFrameSent) {
                     firstFrameSent = true
-                    sendEvent(playerId, "firstFrame", true)
+                    // 首帧事件顺带路由诊断：成功路径也能在应用日志里看到
+                    // 实际走的 direct/proxy 和连接耗时。
+                    sendEvent(
+                        playerId,
+                        "firstFrame",
+                        mapOf("rendered" to true, "route" to com.example.shortplay.HttpBridge.lastRouteInfo)
+                    )
                 }
             }
 
@@ -1128,6 +1134,7 @@ class NativePlayerPlugin internal constructor(
                                 ?: diagnosticUrl?.let(cryptoStream::lastHttpStatus)
                             ),
                         "pullError" to com.example.shortplay.HttpBridge.lastPullFailure(),
+                        "route" to com.example.shortplay.HttpBridge.lastRouteInfo,
                         "decoder" to decoderDiagnostics(error)
                     )
                 )

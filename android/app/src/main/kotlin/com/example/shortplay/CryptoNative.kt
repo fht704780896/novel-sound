@@ -115,6 +115,26 @@ object HttpBridge {
         return system?.filter { it !== Proxy.NO_PROXY } ?: emptyList()
     }
 
+    // Route diagnostics: which route (direct / proxy) actually serves the CDN
+    // fetches and how long the connect took. Hosts are fingerprinted, never
+    // logged verbatim. Read on firstFrame / error to separate "the proxy list
+    // was empty" from "the proxy route is slow" in the app log.
+    @Volatile
+    var lastRouteInfo: String? = null
+        private set
+
+    private val connectStartedAt = ConcurrentHashMap<okhttp3.Call, Long>()
+
+    private fun routeOf(proxy: Proxy): String =
+        if (proxy === Proxy.NO_PROXY) "direct" else "proxy"
+
+    private fun hostFingerprint(host: String?): String {
+        if (host == null) return "?"
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(host.toByteArray(Charsets.UTF_8))
+        return digest.take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
     private val bridge = HttpRangeClient(
         okhttp3.OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -154,6 +174,15 @@ object HttpBridge {
                 }
             })
             .eventListener(object : okhttp3.EventListener() {
+                override fun connectStart(
+                    call: okhttp3.Call,
+                    inetSocketAddress: java.net.InetSocketAddress,
+                    proxy: Proxy,
+                    protocol: okhttp3.Protocol?,
+                ) {
+                    connectStartedAt[call] = System.currentTimeMillis()
+                }
+
                 override fun connectFailed(
                     call: okhttp3.Call,
                     inetSocketAddress: java.net.InetSocketAddress,
@@ -161,11 +190,15 @@ object HttpBridge {
                     protocol: okhttp3.Protocol?,
                     cause: IOException,
                 ) {
+                    val startedAt = connectStartedAt.remove(call)
+                    val elapsed = startedAt?.let { "${System.currentTimeMillis() - it}ms" } ?: "?"
                     // Only a proxy-route failure marks the host; a dead direct
                     // route is the expected state on proxy-only WiFi.
                     if (proxy !== Proxy.NO_PROXY) {
                         call.request().url.host?.let { proxyFailedAt[it] = System.currentTimeMillis() }
                     }
+                    lastRouteInfo = "connectFailed host=${hostFingerprint(call.request().url.host)} " +
+                        "via=${routeOf(proxy)} in=$elapsed err=${cause.javaClass.simpleName}"
                 }
 
                 override fun connectEnd(
@@ -174,6 +207,10 @@ object HttpBridge {
                     proxy: Proxy,
                     protocol: okhttp3.Protocol?,
                 ) {
+                    val startedAt = connectStartedAt.remove(call)
+                    val elapsed = startedAt?.let { "${System.currentTimeMillis() - it}ms" } ?: "?"
+                    lastRouteInfo = "connected host=${hostFingerprint(call.request().url.host)} " +
+                        "via=${routeOf(proxy)} proto=$protocol in=$elapsed"
                     // A successful PROXY connect clears the mark so a network
                     // whose proxy recovers goes straight back to proxy-first.
                     if (proxy !== Proxy.NO_PROXY) {
