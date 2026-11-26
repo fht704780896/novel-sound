@@ -93,7 +93,16 @@ object HttpBridge {
         okhttp3.OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(45, TimeUnit.SECONDS)
+            // NO callTimeout here — deliberately. A call timeout is enforced by
+            // cancelling the whole call, which throws InterruptedIOException
+            // and ENDS the request without walking the remaining routes. On a
+            // WiFi whose firewall DROPs direct CDN connections (hang instead
+            // of refuse), the direct route burned the entire call budget and
+            // the system-proxy fallback never got a turn — every probe died
+            // at 45s with InterruptedIOException until the player gave up
+            // (~3 minutes of retries). connect+read timeouts below are what
+            // actually kill a hung connection AND still let
+            // retryOnConnectionFailure move to the next route.
             .retryOnConnectionFailure(true)
             // Direct connection first, per-network proxy as a fallback. The
             // CDN fetches are direct by default (an app process has no proxy
@@ -545,8 +554,17 @@ internal class HttpRangeClient(
     // has no whole-call deadline because playback can legitimately take hours.
     internal val streamClient = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).build()
 
-    private fun isDnsFailure(t: Throwable): Boolean {
-        var cause: Throwable? = t
+    /**
+     * Exception class + short message for the pull-failure diagnostic. The
+     * class alone cannot tell OkHttp's watchdog timeout ("timeout") from a
+     * thread interrupt ("interrupted") — both report InterruptedIOException.
+     * Messages of network exceptions are short and carry no URLs; trim anyway.
+     */
+    private fun errorOf(t: Throwable): String =
+        t.javaClass.simpleName +
+            (t.message?.trim()?.take(120)?.let { ": $it" } ?: "")
+
+    private fun isDnsFailure(t: Throwable): Boolean {        var cause: Throwable? = t
         repeat(8) {
             if (cause is UnknownHostException) return true
             cause = cause?.cause
@@ -697,7 +715,7 @@ internal class HttpRangeClient(
                     }
                     continue
                 }
-                logMediaFailure("size", url, t.javaClass.simpleName, attempt = attempt + 1)
+                logMediaFailure("size", url, errorOf(t), attempt = attempt + 1)
                 return -1L
             }
         }
@@ -717,7 +735,7 @@ internal class HttpRangeClient(
                 .build()
             req
         } catch (t: Throwable) {
-            logMediaFailure("range", url, t.javaClass.simpleName)
+            logMediaFailure("range", url, errorOf(t))
             return null
         }
         var attempt = 0
@@ -754,7 +772,7 @@ internal class HttpRangeClient(
                     }
                     continue
                 }
-                logMediaFailure("range", url, t.javaClass.simpleName, attempt = attempt + 1)
+                logMediaFailure("range", url, errorOf(t), attempt = attempt + 1)
                 return null
             }
         }
@@ -801,7 +819,7 @@ internal class HttpRangeClient(
             streams[id] = Stream(req, start, expectedSize)
             id
         } catch (t: Throwable) {
-            logMediaFailure("prepare", url, t.javaClass.simpleName)
+            logMediaFailure("prepare", url, errorOf(t))
             0L
         }
     }
@@ -867,7 +885,7 @@ internal class HttpRangeClient(
                 }
             }
         } catch (t: Throwable) {
-            logMediaFailure("connect", s.url, t.javaClass.simpleName, attempt = attempt + 1)
+            logMediaFailure("connect", s.url, errorOf(t), attempt = attempt + 1)
             return false
         } finally {
             if (!retained) {
@@ -930,7 +948,7 @@ internal class HttpRangeClient(
                 }
             } catch (t: Throwable) {
                 streamClose(id)
-                logMediaFailure("read", s.url, t.javaClass.simpleName)
+                logMediaFailure("read", s.url, errorOf(t))
                 -1
             }
         }
