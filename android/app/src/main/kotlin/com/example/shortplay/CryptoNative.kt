@@ -110,7 +110,9 @@ object HttpBridge {
 
     private fun proxyCandidates(uri: URI?): List<Proxy> {
         val system = ProxySelector.getDefault()?.select(uri ?: return emptyList())
-        return system?.filter { it.type != Proxy.Type.DIRECT } ?: emptyList()
+        // Instance comparison instead of Proxy.Type: NO_PROXY is the only
+        // instance ever returned for a DIRECT selection.
+        return system?.filter { it !== Proxy.NO_PROXY } ?: emptyList()
     }
 
     private val bridge = HttpRangeClient(
@@ -177,7 +179,7 @@ object HttpBridge {
                 ) {
                     // A successful DIRECT connect clears the mark so a network
                     // whose direct route recovers goes straight back to it.
-                    if (proxy.type == Proxy.Type.DIRECT) {
+                    if (proxy === Proxy.NO_PROXY) {
                         call.request().url.host?.let { directFailedAt.remove(it) }
                     }
                 }
