@@ -133,6 +133,12 @@ object HttpBridge {
     fun playbackCallFactory(): okhttp3.Call.Factory = bridge.streamClient
 
     /**
+     * Latest media fetch failure diagnostic recorded by [HttpRangeClient.logMediaFailure]
+     * (host fingerprint + exception class + status, never a URL), or null.
+     */
+    fun lastPullFailure(): String? = bridge.lastMediaFailure
+
+    /**
      * Point the local-file bridge at the app's own download/cache trees.
      * Must be called from the plugin's onAttachedToEngine before any
      * playback: until then the bridge has no allowed roots and rejects
