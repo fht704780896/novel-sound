@@ -265,7 +265,9 @@ public class NativePlayerCreationTest {
             f.create("");
             f.drain();
             assertEquals(List.of("created"), f.eventTypes());
-            verify(f.player).setMediaItem(any(MediaItem.class), anyLong());
+            // Plain URLs ride the OkHttp-backed ProgressiveMediaSource
+            // (direct-first proxy fallback); only file:// keeps setMediaItem.
+            verify(f.player).setMediaSource(any(ProgressiveMediaSource.class), anyLong());
             verify(f.player).prepare();
             verifyNoInteractions(f.stream);
         }
@@ -276,7 +278,7 @@ public class NativePlayerCreationTest {
         try (Fixture f = new Fixture()) {
             f.create("", 37_000L);
             f.drain();
-            verify(f.player).setMediaItem(any(MediaItem.class), eq(37_000L));
+            verify(f.player).setMediaSource(any(ProgressiveMediaSource.class), eq(37_000L));
         }
     }
 
@@ -285,7 +287,7 @@ public class NativePlayerCreationTest {
         try (Fixture f = new Fixture()) {
             f.create("", -5L);
             f.drain();
-            verify(f.player).setMediaItem(any(MediaItem.class), eq(0L));
+            verify(f.player).setMediaSource(any(ProgressiveMediaSource.class), eq(0L));
         }
     }
 }
