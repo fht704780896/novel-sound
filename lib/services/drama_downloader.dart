@@ -7,7 +7,6 @@ import '../models/media_item.dart';
 import 'api_client.dart';
 import 'drama_download_store.dart';
 import 'audio_download_transfer.dart';
-import 'download_http_client.dart';
 import 'download_resume_store.dart';
 import 'episode_source_cache.dart';
 
@@ -89,7 +88,7 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
                ? DownloadResumeStore.instance
                : DownloadResumeStore.memory()),
        _resolve = resolve ?? _defaultResolve,
-       _clientFactory = clientFactory ?? createDownloadHttpClient,
+       _clientFactory = clientFactory ?? HttpClient.new,
        super(const []) {
     _store.changes.addListener(_onStoreChanged);
   }

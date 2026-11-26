@@ -53,8 +53,6 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(AiRequestPlugin())
         // issue #466:bytevc2 分集转码(内置补丁 ffmpeg)的执行桥。
         flutterEngine.plugins.add(Bytevc2TranscodePlugin())
-        // WiFi HTTP 代理上报：Dart 下载通道不像 Java 栈那样自动读系统代理。
-        flutterEngine.plugins.add(NetworkProxyPlugin())
 
         hapticsChannel =
             MethodChannel(

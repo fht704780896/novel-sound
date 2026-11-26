@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'download_http_client.dart';
 import 'download_resume_store.dart';
 
 const audioDownloadConnectTimeout = Duration(seconds: 10);
@@ -200,12 +199,6 @@ Future<int> transferDownload({
 }) async {
   final files = run.files!;
   run.check();
-  // Pick up the WiFi proxy (re-queried every transfer so a network switch is
-  // seen) and the Android system trust store (loaded once) before the first
-  // client is built. Without this, Dart's HttpClient downloads on networks
-  // that require the system proxy or serve an inspection CA fail while the
-  // same network plays streams fine (ExoPlayer uses the Java stack).
-  await DownloadNetwork.ensure();
   if (source.containerId.isEmpty ||
       source.height < 0 ||
       source.qualityHeight < 0 ||

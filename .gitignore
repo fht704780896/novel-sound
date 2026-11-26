@@ -70,10 +70,6 @@ app.*.map.json
 /android/keystore.properties
 *.jks
 *.keystore
-# 签名材料辅助文件（密码/base64/证书）与本地解包的 CI 产物，同样不入库。
-/signing/
-/fqapp-arm64-*/
-/fqapp-armv7-*/
 *.pepk
 
 # 本地工具状态与会话归档
