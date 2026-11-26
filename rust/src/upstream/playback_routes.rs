@@ -119,6 +119,11 @@ struct Health {
     last_success_ms: Option<u64>,
     blocked_until_ms: u64,
     empty: bool,
+    /// Monotonic sequence of the failure that set `blocked_until_ms`. Two doors
+    /// can enter their cooldown inside the same millisecond (a fast mock, two
+    /// quick upstream refusals) — then the recovery-time sort ties and must
+    /// fall back to the probing order, or the order flips between runs.
+    failed_seq: u64,
 }
 
 /// Process-wide playback health plus identity-rotation pacing.
@@ -129,6 +134,8 @@ pub(crate) struct PlaybackRouteState {
     last_rotate_ms: Option<u64>,
     rotate_result: Option<bool>,
     rotations: u32,
+    /// Monotonic counter for `Health::failed_seq` — the probing order.
+    failure_counter: u64,
 }
 
 impl PlaybackRouteState {
@@ -153,7 +160,12 @@ impl PlaybackRouteState {
         }
         if available.is_empty() {
             let mut cooling = all;
-            cooling.sort_by_key(|route| self.health_for(*route).blocked_until_ms);
+            // Recovery time first; ties (same-millisecond cooldown entry) fall
+            // back to the probing order so the sequence stays deterministic.
+            cooling.sort_by_key(|route| {
+                let health = self.health_for(*route);
+                (health.blocked_until_ms, health.failed_seq)
+            });
             return cooling;
         }
         available
@@ -192,6 +204,8 @@ impl PlaybackRouteState {
         let health = self.health.entry(route).or_default();
         health.blocked_until_ms = now_ms.saturating_add(cooldown.as_millis() as u64);
         health.empty = empty;
+        self.failure_counter += 1;
+        health.failed_seq = self.failure_counter;
     }
 
     /// One completed round: did *every* attempt end in an empty body?
