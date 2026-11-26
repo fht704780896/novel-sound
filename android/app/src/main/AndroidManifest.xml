@@ -13,6 +13,10 @@
     <!-- AI 校对请求：熄屏/切后台时保持网络与进程 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 息屏听书：Doze 进入后系统会切断网络（wake lock 防不了），需要电池优化
+         豁免让"休眠时保持网络连接"生效——用户在系统弹窗里确认，见
+         NativePlayerPlugin 的 requestIgnoreBatteryOptimizations。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>

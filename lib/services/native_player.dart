@@ -796,9 +796,38 @@ class NativePlayer {
     }
   }
 
-  /// 悬浮窗权限：Android 需要用户在系统设置里允许“显示在其他应用的上层”。
-  static Future<bool> canDrawOverlays() async {
+  /// 是否已被用户豁免电池优化（Android）。
+  ///
+  /// 息屏听书光有 PARTIAL_WAKE_LOCK 不够：设备进入 Doze 后系统会切断网络，
+  /// 切章取源随之失败、播放自动停止。豁免后（鸿蒙/EMUI 上等效于「休眠时保持
+  /// 网络连接」）网络限制不再作用于本应用。
+  static Future<bool> isIgnoringBatteryOptimizations() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
     try {
+      return await _channel
+              .invokeMethod<bool>('isIgnoringBatteryOptimizations') ??
+          true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// 弹出系统对话框请求电池优化豁免。返回是否已豁免（含此前已授权）。
+  ///
+  /// 只在应用前台时调用——息屏时弹的对话框用户看不到。
+  static Future<bool> requestIgnoreBatteryOptimizations() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      return await _channel
+              .invokeMethod<bool>('requestIgnoreBatteryOptimizations') ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 悬浮窗权限：Android 需要用户在系统设置里允许“显示在其他应用的上层”。
+  static Future<bool> canDrawOverlays() async {    try {
       final granted = await _channel
           .invokeMethod<bool>('canDrawOverlays')
           .timeout(_methodTimeout);

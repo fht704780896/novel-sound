@@ -181,6 +181,14 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-common:$media3Version")
     implementation("androidx.media3:media3-datasource:$media3Version")
+    // OkHttp-backed DataSource for unencrypted playback URLs. The default
+    // DefaultHttpDataSource rides HttpURLConnection, which follows the
+    // per-network system proxy with NO fallback: on a WiFi that only egresses
+    // through its proxy — or one whose configured proxy is broken — playback
+    // failed while downloads (Rust reqwest, direct) kept working. Sharing the
+    // HttpBridge client gives those URLs the same direct-first/proxy-fallback
+    // routing as the encrypted path.
+    implementation("androidx.media3:media3-datasource-okhttp:$media3Version")
 
     // MediaStyle + MediaSessionCompat for the listen-mode foreground notification.
     // Without a media session the notification is a plain one: on Android 12+ its

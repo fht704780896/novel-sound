@@ -625,6 +625,20 @@ class _AudioPlaybackController extends ChangeNotifier
         speed: _rate,
       ),
     );
+    unawaited(_maybeRequestBatteryExemption());
+  }
+
+  /// 进程生命周期只提示一次：息屏听书需要电池优化豁免（Doze 断网防不了，
+  /// 见 [NativePlayer.requestIgnoreBatteryOptimizations]）。只在应用前台时
+  /// 弹系统对话框——息屏时弹的对话框用户看不到。
+  static bool _batteryExemptionPrompted = false;
+
+  Future<void> _maybeRequestBatteryExemption() async {
+    if (_batteryExemptionPrompted || !_appActive) return;
+    _batteryExemptionPrompted = true;
+    final exempted = await NativePlayer.isIgnoringBatteryOptimizations();
+    if (exempted || _closed || !_appActive) return;
+    await NativePlayer.requestIgnoreBatteryOptimizations();
   }
 
   void _handleRemoteAction(String action) {

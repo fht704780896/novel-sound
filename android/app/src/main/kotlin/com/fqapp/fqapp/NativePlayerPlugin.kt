@@ -34,6 +34,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -583,6 +584,37 @@ class NativePlayerPlugin internal constructor(
                 result.success(null)
             }
 
+            // 息屏听书依赖两个系统豁免：PARTIAL_WAKE_LOCK 只防 CPU 休眠，防不了
+            // Doze 的网络限制——设备进入 Doze 后网络被切断，切章取源失败 → 播放
+            // 自动停止。电池优化豁免（用户在系统弹窗确认）让网络限制不再作用，
+            // 鸿蒙/EMUI 上等效于"休眠时保持网络连接"。
+            "isIgnoringBatteryOptimizations" -> {
+                val context = activity ?: flutterBinding.applicationContext
+                val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                result.success(power.isIgnoringBatteryOptimizations(context.packageName))
+            }
+
+            "requestIgnoreBatteryOptimizations" -> {
+                val context = activity ?: flutterBinding.applicationContext
+                val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                if (power.isIgnoringBatteryOptimizations(context.packageName)) {
+                    result.success(true)
+                } else {
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}")
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        result.success(true)
+                    } catch (error: Throwable) {
+                        // 厂商 ROM 可能裁掉这个跳转；失败只是拿不到豁免，不阻塞播放。
+                        Log.w(TAG, "battery-optimization request failed", error)
+                        result.success(false)
+                    }
+                }
+            }
+
             "startListenForeground" -> {
                 val context = activity ?: flutterBinding.applicationContext
                 requestNotificationPermissionIfNeeded()
@@ -892,7 +924,29 @@ class NativePlayerPlugin internal constructor(
 
     private fun createPlayerWithUri(playerId: Int, uri: String, options: PlayerBuildOptions, startPositionMs: Long) {
         createPlayer(playerId, options) { player ->
-            player.setMediaItem(MediaItem.fromUri(uri), startPositionMs)
+            if (!uri.startsWith("http://") && !uri.startsWith("https://")) {
+                // 本地文件（file:// 离线回放兜底，keyHex 为空时不会经过这里）
+                // 走 Media3 默认分派，与网络栈无关。
+                player.setMediaItem(MediaItem.fromUri(uri), startPositionMs)
+                return@createPlayer
+            }
+            // Same ProgressiveMediaSource + start-position loading as the
+            // crypto path, but over OkHttp: DefaultHttpDataSource rides
+            // HttpURLConnection, which follows the per-network system proxy
+            // with NO fallback, so a proxy-only or broken-proxy WiFi killed
+            // every unencrypted playback (real-narration audio). Sharing the
+            // HttpBridge client gives these URLs direct-first routing with a
+            // proxy fallback and no whole-call deadline.
+            val dataSourceFactory = DataSource.Factory {
+                OkHttpDataSource.Factory(HttpBridge.playbackCallFactory())
+                    .setUserAgent("fqapp")
+                    .setConnectTimeoutMs(15_000)
+                    .setReadTimeoutMs(30_000)
+                    .createDataSource()
+            }
+            val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(MediaItem.fromUri(uri))
+            player.setMediaSource(mediaSource, startPositionMs)
         }
     }
 

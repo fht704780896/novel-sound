@@ -95,18 +95,23 @@ object HttpBridge {
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
-            // Try the per-network (WiFi/enterprise) system proxy first, then
-            // fall back to a direct connection. Some networks can only leave
-            // through their proxy — a hard NO_PROXY there made every playback
-            // request fail while downloads (the Rust core, which honours the
-            // system proxy) kept working. The reverse case that motivated the
-            // old NO_PROXY — a configured proxy that is unreachable — is also
-            // covered: retryOnConnectionFailure moves on to the direct route.
+            // Direct connection first, per-network proxy as a fallback. The
+            // CDN fetches are direct by default (an app process has no proxy
+            // environment and reqwest — which downloads successfully on the
+            // same WiFi — connects direct too), so direct-first costs nothing
+            // when the network allows it and also sidesteps a broken or
+            // auth-walled system proxy whose 407/502 responses are HTTP-level
+            // errors that do NOT trigger OkHttp's route retry. The proxy
+            // fallback covers networks that only egress through their proxy;
+            // retryOnConnectionFailure walks to the next route on connect
+            // failure. This order replaces both the old hard NO_PROXY (which
+            // broke proxy-only WiFi) and the later proxy-first selector
+            // (which broke WiFi with a dead configured proxy).
             .proxySelector(object : ProxySelector() {
                 private val direct = listOf(Proxy.NO_PROXY)
                 override fun select(uri: URI?): List<Proxy> {
                     val system = uri?.let { ProxySelector.getDefault()?.select(it) }
-                    return (system ?: emptyList()) + direct
+                    return direct + (system ?: emptyList())
                 }
                 override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
                     uri?.let { ProxySelector.getDefault()?.connectFailed(it, sa, ioe) }
@@ -118,6 +123,14 @@ object HttpBridge {
     )
 
     private val fileBridge = OfflineFileBridge(streamIds)
+
+    /**
+     * Call factory for Media3's OkHttpDataSource (unencrypted playback URLs).
+     * Shares the encrypted path's routing — direct first, per-network proxy
+     * fallback — and its no-whole-call-deadline variant, so both paths behave
+     * identically on proxy-only or broken-proxy WiFi.
+     */
+    fun playbackCallFactory(): okhttp3.Call.Factory = bridge.streamClient
 
     /**
      * Point the local-file bridge at the app's own download/cache trees.
@@ -524,7 +537,7 @@ internal class HttpRangeClient(
     // native consumer does not need an infinite read timeout, which would also
     // leave response headers and stalled downloads waiting forever. Streaming
     // has no whole-call deadline because playback can legitimately take hours.
-    private val streamClient = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).build()
+    internal val streamClient = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).build()
 
     private fun isDnsFailure(t: Throwable): Boolean {
         var cause: Throwable? = t
