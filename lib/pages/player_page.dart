@@ -1514,6 +1514,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _fail(Object error, int generation) {
     if (!_current(generation)) return;
+    // 与听书页 event=failed 同构：路由/拉流诊断随 NativePlaybackException
+    // 透传（Kotlin EventListener 的 direct/proxy 路由 + 拉流失败详情）。
+    AppLog.w(
+      'video',
+      'event=failed generation=$generation index=$_index '
+          'type=${error.runtimeType}'
+          '${error is NativePlaybackException ? ' native=${error.errorCode} http=${error.httpStatusCode}' : ''}'
+          '${error is NativePlaybackException && error.route != null ? ' route=[${error.route}]' : ''}'
+          '${error is NativePlaybackException && error.pullError != null ? ' pull=[${error.pullError}]' : ''}'
+          '${error is ApiException ? ' http=${error.statusCode} upstream=${error.upstreamCode}' : ''}',
+    );
     final errorCode = error is NativePlaybackException ? error.errorCode : null;
     final httpStatusCode = switch (error) {
       NativePlaybackException() => error.httpStatusCode,
@@ -1675,6 +1686,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }),
       player.firstFrameStream.listen((_) {
         if (!_current(generation, player)) return;
+        // 首帧即起播成功（Kotlin 侧每播放器实例只发一次）。source→firstFrame
+        // 的间隔配合 pull route 日志可定位 WiFi 下起播慢发生在哪一段。
+        AppLog.i(
+          'video',
+          'event=started generation=$generation index=$_index '
+              'duration_ms=${_duration.inMilliseconds}',
+        );
         _onFirstFrame(player, generation);
         setState(() {});
       }),
