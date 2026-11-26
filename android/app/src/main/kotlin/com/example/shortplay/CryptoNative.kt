@@ -12,6 +12,9 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
+import java.net.URI
 import java.net.UnknownHostException
 import java.nio.file.NoSuchFileException
 import java.security.MessageDigest
@@ -92,10 +95,23 @@ object HttpBridge {
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
-            // Bypass the system/WiFi HTTP proxy and hit the CDN directly. OkHttp
-            // defaults to ProxySelector.getDefault(), which picks up a per-network
-            // proxy and breaks playback when that proxy is unreachable.
-            .proxy(Proxy.NO_PROXY)
+            // Try the per-network (WiFi/enterprise) system proxy first, then
+            // fall back to a direct connection. Some networks can only leave
+            // through their proxy — a hard NO_PROXY there made every playback
+            // request fail while downloads (the Rust core, which honours the
+            // system proxy) kept working. The reverse case that motivated the
+            // old NO_PROXY — a configured proxy that is unreachable — is also
+            // covered: retryOnConnectionFailure moves on to the direct route.
+            .proxySelector(object : ProxySelector() {
+                private val direct = listOf(Proxy.NO_PROXY)
+                override fun select(uri: URI?): List<Proxy> {
+                    val system = uri?.let { ProxySelector.getDefault()?.select(it) }
+                    return (system ?: emptyList()) + direct
+                }
+                override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
+                    uri?.let { ProxySelector.getDefault()?.connectFailed(it, sa, ioe) }
+                }
+            })
             .build(),
         nextId = streamIds,
         onHttpStatus = { url, status -> playbackHttpStatus[url] = status }
