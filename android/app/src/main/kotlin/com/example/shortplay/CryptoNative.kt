@@ -178,7 +178,6 @@ object HttpBridge {
                     call: okhttp3.Call,
                     inetSocketAddress: java.net.InetSocketAddress,
                     proxy: Proxy,
-                    protocol: okhttp3.Protocol?,
                 ) {
                     connectStartedAt[call] = System.currentTimeMillis()
                 }
