@@ -937,11 +937,12 @@ class NativePlayerPlugin internal constructor(
             // every unencrypted playback (real-narration audio). Sharing the
             // HttpBridge client gives these URLs direct-first routing with a
             // proxy fallback and no whole-call deadline.
+            // Timeouts come from the shared HttpBridge client itself
+            // (connect 15s / read 30s); OkHttpDataSource.Factory has no
+            // per-factory timeout setters in media3 1.4.1.
             val dataSourceFactory = DataSource.Factory {
                 OkHttpDataSource.Factory(HttpBridge.playbackCallFactory())
                     .setUserAgent("fqapp")
-                    .setConnectTimeoutMs(15_000)
-                    .setReadTimeoutMs(30_000)
                     .createDataSource()
             }
             val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
