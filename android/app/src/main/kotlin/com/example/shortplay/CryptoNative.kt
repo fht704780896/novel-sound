@@ -89,6 +89,30 @@ object HttpBridge {
     private val streamIds = AtomicLong(1L)
     private val playbackHttpStatus = ConcurrentHashMap<String, Int>()
 
+    // Hosts whose DIRECT route recently failed (a DROP firewall hangs the TCP
+    // connect instead of refusing it). Until the TTL expires those hosts try
+    // the proxy FIRST, so a new CDN host does not burn connectTimeout(15s) on
+    // every dead direct IP before the fallback ever runs — that hang was the
+    // 1-2 minute cold-start on such WiFi. Entries clear on a successful
+    // direct connect (network change, proxy removed) or at TTL expiry.
+    private val directFailedAt = ConcurrentHashMap<String, Long>()
+    private val directFailTtlMs = 10L * 60_000L
+
+    private fun directFailed(host: String?): Boolean {
+        if (host == null) return false
+        val at = directFailedAt[host] ?: return false
+        if (System.currentTimeMillis() - at > directFailTtlMs) {
+            directFailedAt.remove(host)
+            return false
+        }
+        return true
+    }
+
+    private fun proxyCandidates(uri: URI?): List<Proxy> {
+        val system = ProxySelector.getDefault()?.select(uri ?: return emptyList())
+        return system?.filter { it.type != Proxy.Type.DIRECT } ?: emptyList()
+    }
+
     private val bridge = HttpRangeClient(
         okhttp3.OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -119,11 +143,43 @@ object HttpBridge {
             .proxySelector(object : ProxySelector() {
                 private val direct = listOf(Proxy.NO_PROXY)
                 override fun select(uri: URI?): List<Proxy> {
-                    val system = uri?.let { ProxySelector.getDefault()?.select(it) }
-                    return direct + (system ?: emptyList())
+                    val host = uri?.host
+                    // A host whose direct route just hung skips to the front
+                    // of the proxy list for directFailTtlMs.
+                    return if (directFailed(host)) {
+                        proxyCandidates(uri) + direct
+                    } else {
+                        direct + proxyCandidates(uri)
+                    }
                 }
                 override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
                     uri?.let { ProxySelector.getDefault()?.connectFailed(it, sa, ioe) }
+                }
+            })
+            .eventListener(object : okhttp3.EventListener() {
+                override fun connectFailed(
+                    call: okhttp3.Call,
+                    inetSocketAddress: java.net.InetSocketAddress,
+                    proxy: Proxy,
+                    protocol: okhttp3.Protocol?,
+                    cause: IOException,
+                ) {
+                    // Any route failure marks the host: the next select()
+                    // puts the proxy ahead of the dead direct route.
+                    call.request().url.host?.let { directFailedAt[it] = System.currentTimeMillis() }
+                }
+
+                override fun connectEnd(
+                    call: okhttp3.Call,
+                    inetSocketAddress: java.net.InetSocketAddress,
+                    proxy: Proxy,
+                    protocol: okhttp3.Protocol?,
+                ) {
+                    // A successful DIRECT connect clears the mark so a network
+                    // whose direct route recovers goes straight back to it.
+                    if (proxy.type == Proxy.Type.DIRECT) {
+                        call.request().url.host?.let { directFailedAt.remove(it) }
+                    }
                 }
             })
             .build(),
