@@ -555,6 +555,17 @@ internal class HttpRangeClient(
         return digest.take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
+    /**
+     * Diagnostic of the most recent media fetch failure: phase, host
+     * fingerprint, exception class (or invalid_status), attempt and HTTP
+     * status. Host fingerprints only — no URL ever crosses the bridge. Read
+     * when a PlaybackException surfaces so the app log can distinguish DNS
+     * from connect timeout from TLS from a refused status.
+     */
+    @Volatile
+    var lastMediaFailure: String? = null
+        private set
+
     private fun logMediaFailure(
         phase: String,
         url: String,
@@ -569,7 +580,9 @@ internal class HttpRangeClient(
         )
         if (attempt != null) details += "attempt=$attempt"
         if (status != null) details += "status=$status"
-        logError("media failure ${details.joinToString(" ")}")
+        val summary = details.joinToString(" ")
+        lastMediaFailure = summary
+        logError("media failure $summary")
     }
 
     private fun responseRange(resp: okhttp3.Response, start: Long, end: Long?): ResponseRange? {

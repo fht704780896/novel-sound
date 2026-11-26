@@ -36,10 +36,15 @@ class NativePlaybackException implements Exception {
   final int? errorCode;
   final int? httpStatusCode;
 
+  /// 最近一次 CDN 拉流失败的脱敏诊断（phase/host 指纹/异常类/HTTP 状态），
+  /// 由 Kotlin 侧 logMediaFailure 记录、error 事件透传。URL 不会跨桥。
+  final String? pullError;
+
   const NativePlaybackException(
     this.message, {
     this.errorCode,
     this.httpStatusCode,
+    this.pullError,
   });
 
   factory NativePlaybackException.fromEvent(Object? value) {
@@ -52,6 +57,9 @@ class NativePlaybackException implements Exception {
         httpStatusCode: value['httpStatusCode'] is int
             ? value['httpStatusCode'] as int
             : null,
+        pullError: value['pullError'] is String
+            ? value['pullError'] as String
+            : null,
       );
     }
     // Creation/probe errors and older hosts still send a plain string.
@@ -59,7 +67,9 @@ class NativePlaybackException implements Exception {
   }
 
   @override
-  String toString() => 'NativePlaybackException: $message';
+  String toString() => 'NativePlaybackException: $message'
+      '${errorCode == null ? '' : ' code=$errorCode'}'
+      '${pullError == null ? '' : ' pull=[$pullError]'}';
 }
 
 /// A point-in-time view of native playback metrics.

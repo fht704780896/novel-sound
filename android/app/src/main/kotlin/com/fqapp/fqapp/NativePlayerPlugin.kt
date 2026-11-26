@@ -1127,6 +1127,7 @@ class NativePlayerPlugin internal constructor(
                             httpError?.responseCode
                                 ?: diagnosticUrl?.let(cryptoStream::lastHttpStatus)
                             ),
+                        "pullError" to com.example.shortplay.HttpBridge.lastMediaFailure,
                         "decoder" to decoderDiagnostics(error)
                     )
                 )
