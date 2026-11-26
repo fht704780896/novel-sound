@@ -89,20 +89,20 @@ object HttpBridge {
     private val streamIds = AtomicLong(1L)
     private val playbackHttpStatus = ConcurrentHashMap<String, Int>()
 
-    // Hosts whose DIRECT route recently failed (a DROP firewall hangs the TCP
-    // connect instead of refusing it). Until the TTL expires those hosts try
-    // the proxy FIRST, so a new CDN host does not burn connectTimeout(15s) on
-    // every dead direct IP before the fallback ever runs — that hang was the
-    // 1-2 minute cold-start on such WiFi. Entries clear on a successful
-    // direct connect (network change, proxy removed) or at TTL expiry.
-    private val directFailedAt = ConcurrentHashMap<String, Long>()
-    private val directFailTtlMs = 10L * 60_000L
+    // Hosts whose PROXY route recently failed. The default order is
+    // proxy-first (a proxy-only WiFi opens instantly; on mobile networks the
+    // selector returns no proxies so the order is irrelevant), so the memory
+    // covers the reverse case — a configured proxy that hangs or refuses —
+    // by putting DIRECT ahead of the dead proxy for the TTL. Entries clear on
+    // a successful proxy connect (proxy back) or at TTL expiry.
+    private val proxyFailedAt = ConcurrentHashMap<String, Long>()
+    private val proxyFailTtlMs = 10L * 60_000L
 
-    private fun directFailed(host: String?): Boolean {
+    private fun proxyFailed(host: String?): Boolean {
         if (host == null) return false
-        val at = directFailedAt[host] ?: return false
-        if (System.currentTimeMillis() - at > directFailTtlMs) {
-            directFailedAt.remove(host)
+        val at = proxyFailedAt[host] ?: return false
+        if (System.currentTimeMillis() - at > proxyFailTtlMs) {
+            proxyFailedAt.remove(host)
             return false
         }
         return true
@@ -121,37 +121,32 @@ object HttpBridge {
             .readTimeout(30, TimeUnit.SECONDS)
             // NO callTimeout here — deliberately. A call timeout is enforced by
             // cancelling the whole call, which throws InterruptedIOException
-            // and ENDS the request without walking the remaining routes. On a
-            // WiFi whose firewall DROPs direct CDN connections (hang instead
-            // of refuse), the direct route burned the entire call budget and
-            // the system-proxy fallback never got a turn — every probe died
-            // at 45s with InterruptedIOException until the player gave up
-            // (~3 minutes of retries). connect+read timeouts below are what
-            // actually kill a hung connection AND still let
-            // retryOnConnectionFailure move to the next route.
+            // and ENDS the request without walking the remaining routes: the
+            // surviving route never got a turn and every probe died with
+            // InterruptedIOException until the player gave up (~3 minutes of
+            // retries). connect+read timeouts below are what actually kill a
+            // hung connection AND still let retryOnConnectionFailure move to
+            // the next route.
             .retryOnConnectionFailure(true)
-            // Direct connection first, per-network proxy as a fallback. The
-            // CDN fetches are direct by default (an app process has no proxy
-            // environment and reqwest — which downloads successfully on the
-            // same WiFi — connects direct too), so direct-first costs nothing
-            // when the network allows it and also sidesteps a broken or
-            // auth-walled system proxy whose 407/502 responses are HTTP-level
-            // errors that do NOT trigger OkHttp's route retry. The proxy
-            // fallback covers networks that only egress through their proxy;
-            // retryOnConnectionFailure walks to the next route on connect
-            // failure. This order replaces both the old hard NO_PROXY (which
-            // broke proxy-only WiFi) and the later proxy-first selector
-            // (which broke WiFi with a dead configured proxy).
+            // Proxy first, direct connection as the fallback. The system
+            // per-network proxy is usually the ONLY egress on the WiFi networks
+            // this app plays behind (firewalls DROP the direct CDN route — a
+            // hang, not a refusal), so proxy-first opens playback instantly
+            // there; on mobile networks the selector returns no proxies and
+            // the order collapses to plain DIRECT. The dead-proxy case — the
+            // one the old hard NO_PROXY was written for — is covered by the
+            // proxyFailedAt memory: its connect failure flips the order to
+            // direct-first instead of costing 15s on every request forever.
+            // retryOnConnectionFailure walks the remaining routes on failure
+            // either way.
             .proxySelector(object : ProxySelector() {
                 private val direct = listOf(Proxy.NO_PROXY)
                 override fun select(uri: URI?): List<Proxy> {
                     val host = uri?.host
-                    // A host whose direct route just hung skips to the front
-                    // of the proxy list for directFailTtlMs.
-                    return if (directFailed(host)) {
-                        proxyCandidates(uri) + direct
-                    } else {
+                    return if (proxyFailed(host)) {
                         direct + proxyCandidates(uri)
+                    } else {
+                        proxyCandidates(uri) + direct
                     }
                 }
                 override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
@@ -166,9 +161,11 @@ object HttpBridge {
                     protocol: okhttp3.Protocol?,
                     cause: IOException,
                 ) {
-                    // Any route failure marks the host: the next select()
-                    // puts the proxy ahead of the dead direct route.
-                    call.request().url.host?.let { directFailedAt[it] = System.currentTimeMillis() }
+                    // Only a proxy-route failure marks the host; a dead direct
+                    // route is the expected state on proxy-only WiFi.
+                    if (proxy !== Proxy.NO_PROXY) {
+                        call.request().url.host?.let { proxyFailedAt[it] = System.currentTimeMillis() }
+                    }
                 }
 
                 override fun connectEnd(
@@ -177,10 +174,10 @@ object HttpBridge {
                     proxy: Proxy,
                     protocol: okhttp3.Protocol?,
                 ) {
-                    // A successful DIRECT connect clears the mark so a network
-                    // whose direct route recovers goes straight back to it.
-                    if (proxy === Proxy.NO_PROXY) {
-                        call.request().url.host?.let { directFailedAt.remove(it) }
+                    // A successful PROXY connect clears the mark so a network
+                    // whose proxy recovers goes straight back to proxy-first.
+                    if (proxy !== Proxy.NO_PROXY) {
+                        call.request().url.host?.let { proxyFailedAt.remove(it) }
                     }
                 }
             })
